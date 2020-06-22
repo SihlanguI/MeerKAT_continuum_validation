@@ -1,23 +1,11 @@
 #!/usr/bin/env python
-
-"""Input a continuum image from the MeerKAT SDP pipeline and produce a primary beam corrected image.
-Last updated: 12/06/2018
-Usage:
-  primary_beam_correction.py -h | --help
-  primary_beam_correction.py --path=<path>
-
-Try:
-  primary_beam_correction.py --path /path/to/MeerKAT/primary_beam_uncorrected_image
-
-Options:
--h --help                   show the help message"""
-
 import numpy as np
-from docopt import docopt
 from astropy.io import fits
 from astropy import wcs
 from astropy import coordinates
 from astropy import units as u
+import argparse
+import logging
 
 
 def read_fits(pathfits):
@@ -207,63 +195,88 @@ def write_new_fits(pbc_image, path, outputFilename):
     hdr = images.header
     newhdr = hdr.copy()
     # add in required beam keywords
-    if newhdr['CLEANBMJ'] < 0:
-        # add in required beam keywords
-        newhdr['BMAJ'] = float(newhdr['HISTORY'][-2][20:30])
-        newhdr['BMIN'] = float(newhdr['HISTORY'][-2][36:48])
-        newhdr['BPA'] = float(newhdr['HISTORY'][-2][55:])
+    try:
+        if newhdr['CLEANBMJ'] < 0:
+            # add in required beam keywords
+            newhdr['BMAJ'] = float(newhdr['HISTORY'][-2][20:30])
+            newhdr['BMIN'] = float(newhdr['HISTORY'][-2][36:48])
+            newhdr['BPA'] = float(newhdr['HISTORY'][-2][55:])
 
-        newhdr['CTYPE3'] = 'FREQ'
-        newhdr['NAXIS3'] = 1
-        newhdr['CDELT3'] = 1.0
-        newhdr['CRVAL3'] = 1.284e9
-    else:
-        # add in required beam keywords
-        newhdr['BMAJ'] = newhdr['CLEANBMJ']
-        newhdr['BMIN'] = newhdr['CLEANBMN']
-        newhdr['BPA'] = newhdr['CLEANBPA']
-        # change the frequency plane keywords, we don't want multiple frequency
-        newhdr['CTYPE3'] = 'FREQ'
-        newhdr['NAXIS3'] = 1
-        newhdr['CDELT3'] = 1.0
+            newhdr['CTYPE3'] = 'FREQ'
+            newhdr['NAXIS3'] = 1
+            newhdr['CDELT3'] = 1.0
+            newhdr['CRVAL3'] = 1.284e9
+        else:
+            # add in required beam keywords
+            newhdr['BMAJ'] = newhdr['CLEANBMJ']
+            newhdr['BMIN'] = newhdr['CLEANBMN']
+            newhdr['BPA'] = newhdr['CLEANBPA']
+            # change the frequency plane keywords, we don't want multiple frequency
+            newhdr['CTYPE3'] = 'FREQ'
+            newhdr['NAXIS3'] = 1
+            newhdr['CDELT3'] = 1.0
+    except Exception:
+        logging.error('Exception occurred, keywords not found', exc_info=True)
 
     data_new = pbc_image[:, 0:1, :, :]  # the shape of data_new = (1,1, npix, npix)
     new_hdu = fits.PrimaryHDU(header=newhdr, data=data_new)
-    new_hdu.writeto(outputFilename)
+    new_hdu.writeto(outputFilename, overwrite=True)
     return
 
 
-if __name__ == "__main__":
-    args = docopt(__doc__)
-    path = args['--path']
-    # Reading data
-    print('-------------------------')
-    print('Reading in the fits file')
+def config_logging(message):
+    logging.basicConfig(format='%(message)s', level=logging.INFO)
+    return logging.info(message)
+
+
+def create_parser():
+    parser = argparse.ArgumentParser("Input an MeerKAT SDP pipeline continuum image and prouduce "
+                                     "primary beam corrected image in a direcectory same as that "
+                                     "of an input image.")
+    requiredNamed = parser.add_argument_group('required named arguments')
+    requiredNamed.add_argument('-i', '--input',
+                               help='MeerKAT continuum uncorrected primary beam fits file',
+                               required=True, default='stdout')
+    return parser
+
+
+def main():
+    config_logging("MeerKAT SDP continuum image primary beam correction.")
+    parser = create_parser()
+    args = parser.parse_args()
+    path = args.input
+    config_logging('----------------------------------------')
+    logging.info('Reading in the fits file')
     data = read_fits(path)
-    print('-------------------------')
-    print('Getting the position of the phase centre')
+    config_logging('----------------------------------------')
+    config_logging('Getting the position of the phase centre')
     phase_center, source_pos = get_positions(path)
     # Getting pixel indice
-    print('-------------------------')
-    print('Getting the indices of the pixels')
+    config_logging('----------------------------------------')
+    config_logging('Getting the indices of the pixels')
     row, col = np.indices((data.shape[2], data.shape[3]))
     row = np.ravel(row)
     col = np.ravel(col)
     # Getting radial separation beween sorces and the phase centre
-    print('-------------------------')
-    print('Getting the radial separation beween sorces and the phase centre')
+    config_logging('----------------------------------------')
+    config_logging('Getting the radial separation beween sorces and the phase centre')
     separation_rad = radial_offset(phase_center, source_pos, row, col)
-    print('-------------------------')
-    print('Getting the beam pattern for each frequecy plane base on DEEP2 paper')
-    beam_pattern = beam_pattern(separation_rad, path)
+    config_logging('----------------------------------------')
+    config_logging('Getting the beam pattern for each frequecy plane based on the DEEP2 paper.')
+    bp = beam_pattern(separation_rad, path)
     # pbc - primary beam corrected
-    print('-------------------------')
-    print('Doing the primary beam correction in each freq plane and averaging')
-    pbc_image = primary_beam_correction(beam_pattern, path)
+    config_logging('----------------------------------------')
+    config_logging('Doing the primary beam correction in each freq plane and averaging')
+    pbc_image = primary_beam_correction(bp, path)
     # Saving the primary beam corrected image
-    print('Saving the primary beam corrected image')
+    config_logging('----------------------------------------')
+    config_logging('Saving the primary beam corrected image')
     ind = [i for i in range(len(path)) if path[i] == '1']
     outputpath = (path[0:ind[0]-1] + '/' + path[ind[0]:ind[0]+10] +
                   '_primary_beam_corrected' + path[ind[0]+10:])
     write_new_fits(pbc_image, path, outputFilename=outputpath)
-    print(' ---------------DONE----------------- ')
+    config_logging('------------------DONE-------------------')
+
+
+if __name__ == "__main__":
+    main()
