@@ -1,11 +1,12 @@
 #!/usr/bin/env python
+import argparse
+import logging
+import os
 import numpy as np
+from astropy import units as u
 from astropy.io import fits
 from astropy import wcs
 from astropy import coordinates
-from astropy import units as u
-import argparse
-import logging
 
 
 def read_fits(pathfits):
@@ -137,7 +138,6 @@ def standard_deviation(data):
         old_len = len(data)
         cut = np.abs(data - med) < 5.0 * sd
         if np.all(~cut):
-            print('True')
             return sd
         data = data[cut]
         sd = mad(data)[1]
@@ -194,27 +194,26 @@ def write_new_fits(pbc_image, path, outputFilename):
     images = read_fits(path)
     hdr = images.header
     newhdr = hdr.copy()
-    # add in required beam keywords
+    # change the frequency plane keywords, we don't want multiple frequency #axes
+    newhdr['CTYPE3'] = 'FREQ'
+    newhdr['NAXIS3'] = 1
+    newhdr['CDELT3'] = 1.0
     try:
-        if newhdr['CLEANBMJ'] < 0:
-            # add in required beam keywords
-            newhdr['BMAJ'] = float(newhdr['HISTORY'][-2][20:30])
-            newhdr['BMIN'] = float(newhdr['HISTORY'][-2][36:48])
-            newhdr['BPA'] = float(newhdr['HISTORY'][-2][55:])
-
-            newhdr['CTYPE3'] = 'FREQ'
-            newhdr['NAXIS3'] = 1
-            newhdr['CDELT3'] = 1.0
-            newhdr['CRVAL3'] = 1.284e9
-        else:
-            # add in required beam keywords
+        if 'CLEANBMJ' in newhdr:
+            if newhdr['CLEANBMJ'] < 0:
+                # Checking CLEANBMAJ in the history 
+                newhdr['BMAJ'] = float(newhdr['HISTORY'][-2][20:30])
+                newhdr['BMIN'] = float(newhdr['HISTORY'][-2][36:48])
+                newhdr['BPA'] = float(newhdr['HISTORY'][-2][55:])
+            else:
+                # add in required beam keywords
+                newhdr['BMAJ'] = newhdr['CLEANBMJ']
+                newhdr['BMIN'] = newhdr['CLEANBMN']
+                newhdr['BPA'] = newhdr['CLEANBPA']
+        elif 'BMAJ' in newhdr:
             newhdr['BMAJ'] = newhdr['CLEANBMJ']
             newhdr['BMIN'] = newhdr['CLEANBMN']
             newhdr['BPA'] = newhdr['CLEANBPA']
-            # change the frequency plane keywords, we don't want multiple frequency
-            newhdr['CTYPE3'] = 'FREQ'
-            newhdr['NAXIS3'] = 1
-            newhdr['CDELT3'] = 1.0
     except Exception:
         logging.error('Exception occurred, keywords not found', exc_info=True)
 
@@ -233,10 +232,9 @@ def create_parser():
     parser = argparse.ArgumentParser("Input an MeerKAT SDP pipeline continuum image and prouduce "
                                      "primary beam corrected image in a direcectory same as that "
                                      "of an input image.")
-    requiredNamed = parser.add_argument_group('required named arguments')
-    requiredNamed.add_argument('-i', '--input',
-                               help='MeerKAT continuum uncorrected primary beam fits file',
-                               required=True, default='stdout')
+    requirednamed = parser.add_argument_group('required named arguments')
+    requirednamed.add_argument('input',
+                               help='MeerKAT continuum uncorrected primary beam fits file')
     return parser
 
 
@@ -266,14 +264,14 @@ def main():
     bp = beam_pattern(separation_rad, path)
     # pbc - primary beam corrected
     config_logging('----------------------------------------')
-    config_logging('Doing the primary beam correction in each freq plane and averaging')
+    config_logging('Doing the primary beam correction in each frequency plane and averaging')
     pbc_image = primary_beam_correction(bp, path)
     # Saving the primary beam corrected image
     config_logging('----------------------------------------')
     config_logging('Saving the primary beam corrected image')
-    ind = [i for i in range(len(path)) if path[i] == '1']
-    outputpath = (path[0:ind[0]-1] + '/' + path[ind[0]:ind[0]+10] +
-                  '_primary_beam_corrected' + path[ind[0]+10:])
+    ind = [i for i in range(len(path)) if path[i] == '.' and (path[i+1:i+5] == 'fits' or
+                                                              path[i+1:i+5] == 'FITS')] 
+    outputpath = (path[0:ind[0]] + '_primary_beam_corrected.fits')
     write_new_fits(pbc_image, path, outputFilename=outputpath)
     config_logging('------------------DONE-------------------')
 
