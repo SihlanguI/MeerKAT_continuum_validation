@@ -271,7 +271,7 @@ def main():
     config_logging('Saving the primary beam corrected image')
     ind = [i for i in range(len(path)) if path[i] == '.' and (path[i+1:i+5] == 'fits' or
                                                               path[i+1:i+5] == 'FITS')] 
-    outputpath = (path[0:ind[0]] + '_primary_beam_corrected.fits')
+    outputpath = (path[0:ind[0]] + '_PB.fits')
     write_new_fits(pbc_image, path, outputFilename=outputpath)
     config_logging('------------------DONE-------------------')
 
