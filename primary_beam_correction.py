@@ -1,7 +1,6 @@
 #!/usr/bin/env python
 import argparse
 import logging
-import os
 import numpy as np
 from astropy import units as u
 from astropy.io import fits
@@ -159,33 +158,53 @@ def primary_beam_correction(beam_pattern, path):
     '''
     Correcting for the primary beam effects.
     '''
-    true_image = read_fits(path)
-    tr_img = []
-    nterm = true_image.header['NTERM']
-    for j in range(nterm, true_image.header['NSPEC']+nterm):
-        tr_img.append(np.ravel(true_image.data[0, j, :, :]))
+    raw_image = read_fits(path)
+    raw_img = []
+    try:
+        nterm = raw_image.header['NTERM']
+    except KeyError:
+        nterm = _get_value_from_history('NTERM', raw_image.header)
+    nterm = int(nterm)
+    for j in range(nterm, raw_image.header['NSPEC']+nterm):
+        raw_img.append(np.ravel(raw_image.data[0, j, :, :]))
     snr = []
     pbc_image = []
     for i in range(len((beam_pattern))):
-        # Getting the rms noise in each image (before primary beam correction)
         # Getting all the values with attenuated flux of less than 10% of the peak
         ind = np.argwhere(beam_pattern[i] <= 0.10)
         if len(ind) > 0:
             beam_pattern[i][ind] = np.nan
-        snr.append(standard_deviation(tr_img[i]))
+        # Getting the rms noise in each image (before primary beam correction)
+        snr.append(standard_deviation(raw_img[i]))
         # To correct the effect of the beam we divide by the beam.
-        ratio = tr_img[i] / beam_pattern[i]
+        ratio = raw_img[i] / beam_pattern[i]
         pbc_image.append(ratio)
     # Primary beam corrected (pbc) image
     pbc_image = np.array(pbc_image)
     snr = np.array(snr)
     # Calculating a weighted average of the indidvidual frequency lane images
     corr_image = weigted_average(pbc_image, snr)
-    corr_image = corr_image.reshape(true_image.data.shape[2], true_image.data.shape[3])
+    corr_image = corr_image.reshape(raw_image.data.shape[2], raw_image.data.shape[3])
     # Add new axis
     corr_image = corr_image[np.newaxis, np.newaxis, :, :]
     return corr_image
 
+
+def _get_value_from_history(keyword, header):
+    ''''
+    Return the value of a keyword from the FITS HISTORY in header
+    Assumes keyword is found in a line of the HISTORY with format: 'keyword = value'
+    Input: Keyword [e.g BMAJ, ClEANBMJ, BMIN] and Image header
+    '''
+    for history in header['HISTORY']:
+        line = history.replace('=', ' ').split()
+        try:
+            ind = line.index(keyword)
+        except ValueError:
+            continue
+        return line[ind + 1]
+    raise KeyError(f'{keyword} not found in HISTORY') 
+    
 
 def write_new_fits(pbc_image, path, outputFilename):
     '''
@@ -194,86 +213,83 @@ def write_new_fits(pbc_image, path, outputFilename):
     images = read_fits(path)
     hdr = images.header
     newhdr = hdr.copy()
-    # change the frequency plane keywords, we don't want multiple frequency #axes
+    # change the frequency plane keywords, we don't want multiple frequency axes
     newhdr['CTYPE3'] = 'FREQ'
     newhdr['NAXIS3'] = 1
     newhdr['CDELT3'] = 1.0
     try:
-        if 'CLEANBMJ' in newhdr:
-            if newhdr['CLEANBMJ'] < 0:
-                # Checking CLEANBMAJ in the history 
-                newhdr['BMAJ'] = float(newhdr['HISTORY'][-2][20:30])
-                newhdr['BMIN'] = float(newhdr['HISTORY'][-2][36:48])
-                newhdr['BPA'] = float(newhdr['HISTORY'][-2][55:])
-            else:
-                # add in required beam keywords
-                newhdr['BMAJ'] = newhdr['CLEANBMJ']
-                newhdr['BMIN'] = newhdr['CLEANBMN']
-                newhdr['BPA'] = newhdr['CLEANBPA']
-        elif 'BMAJ' in newhdr:
+        if newhdr['CLEANBMJ'] > 0:
+            # add in required beam keywords
             newhdr['BMAJ'] = newhdr['CLEANBMJ']
             newhdr['BMIN'] = newhdr['CLEANBMN']
             newhdr['BPA'] = newhdr['CLEANBPA']
-    except Exception:
+        else:
+            # Checking CLEANBMAJ in the history 
+            newhdr['BMAJ'] = float(_get_value_from_history('BMAJ', newhdr))
+            newhdr['BMIN'] = float(_get_value_from_history('BMIN', newhdr))
+            newhdr['BPA'] = float(_get_value_from_history('BPA', newhdr))
+    except KeyError:
         logging.error('Exception occurred, keywords not found', exc_info=True)
-
     data_new = pbc_image[:, 0:1, :, :]  # the shape of data_new = (1,1, npix, npix)
     new_hdu = fits.PrimaryHDU(header=newhdr, data=data_new)
     new_hdu.writeto(outputFilename, overwrite=True)
     return
 
 
-def config_logging(message):
+def intialize_logs():
+    '''
+    Initializing the log settings
+    '''
     logging.basicConfig(format='%(message)s', level=logging.INFO)
-    return logging.info(message)
 
 
 def create_parser():
     parser = argparse.ArgumentParser("Input an MeerKAT SDP pipeline continuum image and prouduce "
                                      "primary beam corrected image in a direcectory same as that "
                                      "of an input image.")
-    requirednamed = parser.add_argument_group('required named arguments')
-    requirednamed.add_argument('input',
+    parser.add_argument('input',
                                help='MeerKAT continuum uncorrected primary beam fits file')
     return parser
 
 
 def main():
-    config_logging("MeerKAT SDP continuum image primary beam correction.")
+    # Initializing the log settings
+    intialize_logs()
+    logging.info("MeerKAT SDP continuum image primary beam correction.")
     parser = create_parser()
     args = parser.parse_args()
     path = args.input
-    config_logging('----------------------------------------')
+    logging.info('----------------------------------------')
     logging.info('Reading in the fits file')
     data = read_fits(path)
-    config_logging('----------------------------------------')
-    config_logging('Getting the position of the phase centre')
+    logging.info('----------------------------------------')
+    logging.info('Getting the position of the phase centre')
     phase_center, source_pos = get_positions(path)
     # Getting pixel indice
-    config_logging('----------------------------------------')
-    config_logging('Getting the indices of the pixels')
+    logging.info('----------------------------------------')
+    logging.info('Getting the indices of the pixels')
     row, col = np.indices((data.shape[2], data.shape[3]))
     row = np.ravel(row)
     col = np.ravel(col)
     # Getting radial separation beween sorces and the phase centre
-    config_logging('----------------------------------------')
-    config_logging('Getting the radial separation beween sorces and the phase centre')
+    logging.info('----------------------------------------')
+    logging.info('Getting the radial separation between sources and the phase centre')
     separation_rad = radial_offset(phase_center, source_pos, row, col)
-    config_logging('----------------------------------------')
-    config_logging('Getting the beam pattern for each frequecy plane based on the DEEP2 paper.')
+    logging.info('----------------------------------------')
+    logging.info('Getting the beam pattern for each frequecy plane based on the DEEP2 paper.')
     bp = beam_pattern(separation_rad, path)
     # pbc - primary beam corrected
-    config_logging('----------------------------------------')
-    config_logging('Doing the primary beam correction in each frequency plane and averaging')
+    logging.info('----------------------------------------')
+    logging.info('Doing the primary beam correction in each frequency plane and averaging')
     pbc_image = primary_beam_correction(bp, path)
     # Saving the primary beam corrected image
-    config_logging('----------------------------------------')
-    config_logging('Saving the primary beam corrected image')
+    logging.info('----------------------------------------')
+    logging.info('Saving the primary beam corrected image')
     ind = [i for i in range(len(path)) if path[i] == '.' and (path[i+1:i+5] == 'fits' or
                                                               path[i+1:i+5] == 'FITS')] 
     outputpath = (path[0:ind[0]] + '_PB.fits')
     write_new_fits(pbc_image, path, outputFilename=outputpath)
-    config_logging('------------------DONE-------------------')
+    logging.info('------------------DONE-------------------')
 
 
 if __name__ == "__main__":
