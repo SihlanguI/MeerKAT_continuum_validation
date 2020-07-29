@@ -1,6 +1,7 @@
 #!/usr/bin/env python
 import argparse
 import logging
+import os
 import numpy as np
 from astropy import units as u
 from astropy.io import fits
@@ -86,13 +87,23 @@ def cosine_power_pattern(separation_rad, c_freq):
     return flux_density
 
 
-def beam_pattern(path, row, col):
+def beam_pattern(path):
     """
     Making beam pattern using the Cosine-squared power approximation from Mauch et al. (2020)
     """
+    # Reading the fits file
+    data = read_fits(path)
+    # Getting pixel indices
+    row, col = np.indices((data.shape[2], data.shape[3]))
+    row = np.ravel(row)
+    col = np.ravel(col)
+    # Getting the central frequency of the image header given.
     c_freq = central_freq(path)
+    # Getting radial separation between sources and the phase centre
     phase_center, image_wcs = get_positions(path)
+    # Calling the radial_offset function
     separation_rad = radial_offset(phase_center, image_wcs, row, col)
+    # Calling the cosine_power_pattern function
     beam_list = cosine_power_pattern(separation_rad, c_freq)
     return beam_list
 
@@ -109,9 +120,9 @@ def mad(data):
 
 def standard_deviation(data):
     """
-    Calcalating the standard deviation of each frequency plane using MAD. Rejecting pixels
-    more than 5 sigma from the mean until either no more pixels are rejected or a maximum 
-    of 50 iterations is reached.
+    Calcalating the standard deviation of each frequency plane using MAD. Rejecting pixels more
+    than 5 sigma from the mean until either no more pixels are rejected or a maximum  of 50
+    iterations is reached.
     Returns: Weights per each frequency plane
     """
     diff = 1
@@ -133,16 +144,17 @@ def standard_deviation(data):
         med, sd = mad(data)
         diff = old_len - len(data)
         if sd == 0.0:
-            return old_sd
+            return 1/(old_sd)**2
     return 1/(sd)**2
 
 
-def weighted_average(arr, weights):
+def weighted_average(arr, weights, mask_image):
     """
     Computing weighted average of all the frequency planes.
     """
-    wt_average = np.average(arr, weights=weights, axis=0)
-    return wt_average
+    masked_arr = np.ma.MaskedArray(arr, mask=mask_image)
+    wt_average = np.average(masked_arr, weights=weights, axis=0)
+    return wt_average.data
 
 
 def primary_beam_correction(beam_pattern, path):
@@ -153,21 +165,24 @@ def primary_beam_correction(beam_pattern, path):
     nterm = raw_image.header['NTERM']
     snr = []
     pbc_image = []
+    mask_image = []
+    # Getting all the values with attenuated flux of less than 10% of the peak
+    beam_mask = beam_pattern[-1] <= 0.1
     for i in range(len((beam_pattern))):
-        # Getting all the values with attenuated flux of less than 10% of the peak
-        ind = np.argwhere(beam_pattern[i] <= 0.10)
-        if len(ind) > 0:
-            beam_pattern[i][ind] = np.nan
-        # Getting the rms noise in each image (before primary beam correction)    
+        beam_pattern[i][beam_mask] = np.nan
+        # Getting the rms noise in each image (before primary beam correction)
         snr.append(standard_deviation(np.ravel(raw_image.data[0, i+nterm, :, :])))
         # To correct the effect of the beam we divide by the beam.
         ratio = np.ravel(raw_image.data[0, i + nterm, :, :]) / beam_pattern[i]
+        mask = np.isnan(ratio)
+        mask_image.append(mask)
         pbc_image.append(ratio)
     # Primary beam corrected (pbc) image
     pbc_image = np.array(pbc_image)
+    mask_image = np.array(mask_image)
     snr = np.array(snr)
     # Calculating a weighted average of the individual frequency plane images
-    corr_image = weighted_average(pbc_image, snr)
+    corr_image = weighted_average(pbc_image, snr, mask_image)
     # Add new axis
     corr_image = corr_image.reshape(1, 1, raw_image.data.shape[2], raw_image.data.shape[3])
     return corr_image
@@ -177,7 +192,7 @@ def _get_value_from_history(keyword, header):
     """
     Return the value of a keyword from the FITS HISTORY in header
     Assumes keyword is found in a line of the HISTORY with format: 'keyword = value'
-    Input: Keyword [e.g BMAJ, ClEANBMJ, BMIN] and Image header
+    Input: Keyword [e.g BMAJ, CLEANBMJ, BMIN] and Image header
     """
     for history in header['HISTORY']:
         line = history.replace('=', ' ').split()
@@ -186,7 +201,7 @@ def _get_value_from_history(keyword, header):
         except ValueError:
             continue
         return line[ind + 1]
-    raise KeyError(f'{keyword} not found in HISTORY') 
+    raise KeyError(f'{keyword} not found in HISTORY')
     return
 
 
@@ -208,7 +223,7 @@ def write_new_fits(pbc_image, path, outputFilename):
             newhdr['BMIN'] = newhdr['CLEANBMN']
             newhdr['BPA'] = newhdr['CLEANBPA']
         else:
-            # Checking CLEANBMAJ in the history 
+            # Checking CLEANBMAJ in the history
             newhdr['BMAJ'] = float(_get_value_from_history('BMAJ', newhdr))
             newhdr['BMIN'] = float(_get_value_from_history('BMIN', newhdr))
             newhdr['BPA'] = float(_get_value_from_history('BPA', newhdr))
@@ -241,24 +256,11 @@ def main():
     logging.info('MeerKAT SDP continuum image primary beam correction.')
     parser = create_parser()
     args = parser.parse_args()
-    path = args.input
-    logging.info('----------------------------------------')
-    logging.info('Reading in the fits file')
-    data = read_fits(path)
-    logging.info('----------------------------------------')
-    logging.info('Getting the position of the phase centre')
-    phase_center, image_wcs = get_positions(path)
-    # Getting pixel indice
-    logging.info('----------------------------------------')
-    logging.info('Getting the indices of the pixels')
-    row, col = np.indices((data.shape[2], data.shape[3]))
-    row = np.ravel(row)
-    col = np.ravel(col)
-    # Getting radial separation beween sorces and the phase centre
+    path = os.path.abspath(args.input)
     logging.info('----------------------------------------')
     logging.info('Getting the beam pattern for each frequecy plane based on the '
-    'Cosine-squared power approximation from Mauch et al. (2020).')
-    bp = beam_pattern(path, row, col)
+                 'Cosine-squared power approximation from Mauch et al. (2020).')
+    bp = beam_pattern(path)
     # pbc - primary beam corrected
     logging.info('----------------------------------------')
     logging.info('Doing the primary beam correction in each frequency plane and averaging')
@@ -266,9 +268,9 @@ def main():
     # Saving the primary beam corrected image
     logging.info('----------------------------------------')
     logging.info('Saving the primary beam corrected image')
-    ind = [i for i in range(len(path)) if path[i] == '.' and (path[i+1:i+5] == 'fits' or
-                                                              path[i+1:i+5] == 'FITS')] 
-    outputpath = (path[0:ind[0]] + '_PB.fits')
+    head, tail = os.path.split(path)
+    fname, fext = tail.split('.')
+    outputpath = (head+fname+'_PB'+fext)
     write_new_fits(pbc_image, path, outputFilename=outputpath)
     logging.info('------------------DONE-------------------')
 
