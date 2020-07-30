@@ -120,7 +120,7 @@ def mad(data):
 
 def standard_deviation(data):
     """
-    Calcalating the standard deviation of each frequency plane using MAD. Rejecting pixels more
+    Calculating the standard deviation of each frequency plane using MAD. Rejecting pixels more
     than 5 sigma from the mean until either no more pixels are rejected or a maximum  of 50
     iterations is reached.
     Returns: Weights per each frequency plane
